@@ -565,7 +565,7 @@ func (c *Cluster) clusterInfoToMonConfigWithExclude(excludedMon string) []*monCo
 		if schedule != nil {
 			zone = schedule.Zone
 			nodeName = schedule.Name
-			if schedule.Address == monPublicIP {
+			if c.ClusterInfo.NetworkSpec.InternalLoadBalancerService.Enabled || schedule.Address == monPublicIP {
 				isHostNetwork = true
 			}
 		}
@@ -806,12 +806,27 @@ func (c *Cluster) initMonIPs(mons []*monConfig) error {
 			return c.ClusterInfo.Context.Err()
 		}
 		if m.UseHostNetwork {
-			logger.Infof("setting mon %q endpoints for hostnetwork mode", m.DaemonName)
-			node, ok := c.mapping.Schedule[m.DaemonName]
-			if !ok || node == nil {
-				return errors.Errorf("failed to find node for mon %q in assignment map", m.DaemonName)
+			if !c.ClusterInfo.NetworkSpec.InternalLoadBalancerService.Enabled {
+				logger.Infof("setting mon %q endpoints for hostnetwork mode", m.DaemonName)
+				node, ok := c.mapping.Schedule[m.DaemonName]
+				if !ok || node == nil {
+					return errors.Errorf("failed to find node for mon %q in assignment map", m.DaemonName)
+				}
+				m.PublicIP = node.Address
+			} else {
+				monService, err := c.createService(m)
+				if err != nil {
+					return errors.Wrap(err, "failed to create mon service")
+				}
+				if len(monService.Status.LoadBalancer.Ingress) == 0 {
+					return errors.Errorf("failed to get public IP for mon %q", m.DaemonName)
+				}
+				m.PublicIP = monService.Status.LoadBalancer.Ingress[0].IP
+				if m.PublicIP == "" {
+					return errors.Errorf("failed to get public IP for mon %q", m.DaemonName)
+				}
+				logger.Infof("mon %q public IP is %s", m.DaemonName, m.PublicIP)
 			}
-			m.PublicIP = node.Address
 		} else {
 			monService, err := c.createService(m)
 			if err != nil {
@@ -1417,6 +1432,9 @@ func (c *Cluster) startMon(m *monConfig, schedule *controller.MonScheduleInfo) e
 				// update nodeSelector in case if ROOK_CUSTOM_HOSTNAME_LABEL was changed:
 				nodeSelector = map[string]string{k8sutil.LabelHostname(): schedule.Hostname}
 			}
+			if c.ClusterInfo.NetworkSpec.InternalLoadBalancerService.Enabled {
+				nodeSelector = nil
+			}
 			k8sutil.SetNodeAntiAffinityForPod(&d.Spec.Template.Spec, requiredDuringScheduling(&c.spec), k8sutil.LabelHostname(),
 				map[string]string{k8sutil.AppAttr: AppName}, nodeSelector)
 		} else {
@@ -1451,6 +1469,9 @@ func (c *Cluster) startMon(m *monConfig, schedule *controller.MonScheduleInfo) e
 		p.PodAffinity = nil
 		p.PodAntiAffinity = nil
 		nodeSelector = map[string]string{k8sutil.LabelHostname(): schedule.Hostname}
+	}
+	if c.ClusterInfo.NetworkSpec.InternalLoadBalancerService.Enabled {
+		nodeSelector = nil
 	}
 	k8sutil.SetNodeAntiAffinityForPod(&d.Spec.Template.Spec, requiredDuringScheduling(&c.spec), k8sutil.LabelHostname(),
 		map[string]string{k8sutil.AppAttr: AppName}, nodeSelector)

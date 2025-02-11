@@ -652,11 +652,28 @@ func (c *Cluster) failoverMon(name string) error {
 	}
 
 	if c.spec.Network.IsHost() {
-		schedule, ok := c.mapping.Schedule[m.DaemonName]
-		if !ok {
-			return errors.Errorf("mon %s doesn't exist in assignment map", m.DaemonName)
+		if !c.ClusterInfo.NetworkSpec.InternalLoadBalancerService.Enabled {
+			schedule, ok := c.mapping.Schedule[m.DaemonName]
+			if !ok {
+				return errors.Errorf("mon %s doesn't exist in assignment map", m.DaemonName)
+			}
+			m.PublicIP = schedule.Address
+		} else {
+			// Create the service endpoint
+			monService, err := c.createService(m)
+			if err != nil {
+				return errors.Wrap(err, "failed to create mon service")
+			}
+			if len(monService.Status.LoadBalancer.Ingress) == 0 {
+				return errors.Errorf("failed to get public IP for mon %q", m.DaemonName)
+			}
+			m.PublicIP = monService.Status.LoadBalancer.Ingress[0].IP
+			if m.PublicIP == "" {
+				return errors.Errorf("failed to get public IP for mon %q", m.DaemonName)
+			}
+			logger.Infof("mon %q public IP is %s", m.DaemonName, m.PublicIP)
 		}
-		m.PublicIP = schedule.Address
+
 		m.UseHostNetwork = true
 	} else {
 		// Create the service endpoint

@@ -29,14 +29,20 @@ import (
 func (c *Cluster) createService(mon *monConfig) (*v1.Service, error) {
 	svcDef := &v1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      mon.ResourceName,
-			Namespace: c.Namespace,
-			Labels:    c.getLabels(mon, false, true),
+			Name:        mon.ResourceName,
+			Namespace:   c.Namespace,
+			Labels:      c.getLabels(mon, false, true),
+			Annotations: c.ClusterInfo.NetworkSpec.InternalLoadBalancerService.Labels,
 		},
 		Spec: v1.ServiceSpec{
 			Selector: c.getLabels(mon, false, false),
 		},
 	}
+
+	if c.ClusterInfo.NetworkSpec.InternalLoadBalancerService.Enabled {
+		svcDef.Spec.Type = v1.ServiceTypeLoadBalancer
+	}
+
 	err := c.ownerInfo.SetOwnerReference(svcDef)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to set owner reference to mon service %q", svcDef.Name)
@@ -51,7 +57,7 @@ func (c *Cluster) createService(mon *monConfig) (*v1.Service, error) {
 	// Set the ClusterIP if the service does not exist and we expect a certain cluster IP
 	// For example, in disaster recovery the service might have been deleted accidentally, but we have the
 	// expected endpoint from the mon configmap.
-	if mon.PublicIP != "" {
+	if !c.ClusterInfo.NetworkSpec.InternalLoadBalancerService.Enabled && mon.PublicIP != "" {
 		_, err := c.context.Clientset.CoreV1().Services(c.Namespace).Get(c.ClusterInfo.Context, svcDef.Name, metav1.GetOptions{})
 		if err != nil && kerrors.IsNotFound(err) {
 			logger.Infof("ensuring the clusterIP for mon %q is %q", mon.DaemonName, mon.PublicIP)

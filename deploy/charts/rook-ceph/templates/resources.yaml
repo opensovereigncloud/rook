@@ -2688,6 +2688,16 @@ spec:
                         If host networking is enabled or disabled on a running cluster, then the operator will automatically fail over all the mons to
                         apply the new network settings.
                       type: boolean
+                    internalLoadBalancerService:
+                      description: Enable internal loadbalancer service
+                      properties:
+                        enabled:
+                          type: boolean
+                        labels:
+                          additionalProperties:
+                            type: string
+                          type: object
+                      type: object
                     ipFamily:
                       description: IPFamily is the single stack IPv6 or IPv4 protocol
                       enum:
