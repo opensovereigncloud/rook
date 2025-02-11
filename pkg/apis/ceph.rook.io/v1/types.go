@@ -3447,6 +3447,12 @@ type NetworkSpec struct {
 	// Enable multiClusterService to export the Services between peer clusters
 	// +optional
 	MultiClusterService MultiClusterServiceSpec `json:"multiClusterService,omitempty"`
+
+	// InternalLoadBalancerService exposes each mon through a Service of type LoadBalancer and makes
+	// the mon advertise the load balancer address instead of the node address. This keeps the mon
+	// addresses stable when nodes are replaced. Only effective with the "host" network provider.
+	// +optional
+	InternalLoadBalancerService InternalLoadBalancerServiceSpec `json:"internalLoadBalancerService,omitempty"`
 }
 
 // NetworkProviderType defines valid network providers for Rook.
@@ -3499,6 +3505,19 @@ type MultiClusterServiceSpec struct {
 	// services. For example: <clusterid>.<svc>.<ns>.svc.clusterset.local
 	ClusterID string `json:"clusterID,omitempty"`
 }
+
+// InternalLoadBalancerServiceSpec configures load balancer services for the mons
+type InternalLoadBalancerServiceSpec struct {
+	// Enabled creates the mon services with type LoadBalancer
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Labels are applied as annotations to the mon services, for example to request an internal
+	// load balancer from the cloud provider
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+}
+
 type ConnectionsSpec struct {
 	// Encryption settings for the network connections.
 	// +nullable

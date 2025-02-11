@@ -646,7 +646,7 @@ func (c *Cluster) clusterInfoToMonConfigWithExclude(excludedMon string) []*monCo
 		if schedule != nil {
 			zone = schedule.Zone
 			nodeName = schedule.Name
-			if schedule.Address == monPublicIP {
+			if c.ClusterInfo.NetworkSpec.InternalLoadBalancerService.Enabled || schedule.Address == monPublicIP {
 				isHostNetwork = true
 			}
 		}
@@ -898,12 +898,20 @@ func (c *Cluster) initMonIPs(mons []*monConfig) error {
 			return c.ClusterInfo.Context.Err()
 		}
 		if m.UseHostNetwork {
-			log.NamespacedInfo(c.Namespace, logger, "setting mon %q endpoints for hostnetwork mode", m.DaemonName)
-			node, ok := c.mapping.Schedule[m.DaemonName]
-			if !ok || node == nil {
-				return errors.Errorf("failed to find node for mon %q in assignment map", m.DaemonName)
+			if c.ClusterInfo.NetworkSpec.InternalLoadBalancerService.Enabled {
+				ip, err := c.createLoadBalancerService(m)
+				if err != nil {
+					return err
+				}
+				m.PublicIP = ip
+			} else {
+				log.NamespacedInfo(c.Namespace, logger, "setting mon %q endpoints for hostnetwork mode", m.DaemonName)
+				node, ok := c.mapping.Schedule[m.DaemonName]
+				if !ok || node == nil {
+					return errors.Errorf("failed to find node for mon %q in assignment map", m.DaemonName)
+				}
+				m.PublicIP = node.Address
 			}
-			m.PublicIP = node.Address
 		} else {
 			monService, err := c.createService(m)
 			if err != nil {
@@ -1705,6 +1713,9 @@ func (c *Cluster) configureDefaultMonStorage(m *monConfig, d *apps.Deployment, s
 				// update nodeSelector in case if ROOK_CUSTOM_HOSTNAME_LABEL was changed:
 				nodeSelector = map[string]string{k8sutil.LabelHostname(): schedule.Hostname}
 			}
+			if c.ClusterInfo.NetworkSpec.InternalLoadBalancerService.Enabled {
+				nodeSelector = nil
+			}
 			k8sutil.SetNodeAntiAffinityForPod(&d.Spec.Template.Spec, requiredDuringScheduling(&c.spec), k8sutil.LabelHostname(),
 				map[string]string{k8sutil.AppAttr: AppName}, nodeSelector)
 		} else {
@@ -1739,6 +1750,9 @@ func (c *Cluster) configureDefaultMonStorage(m *monConfig, d *apps.Deployment, s
 		p.PodAffinity = nil
 		p.PodAntiAffinity = nil
 		nodeSelector = map[string]string{k8sutil.LabelHostname(): schedule.Hostname}
+	}
+	if c.ClusterInfo.NetworkSpec.InternalLoadBalancerService.Enabled {
+		nodeSelector = nil
 	}
 	k8sutil.SetNodeAntiAffinityForPod(&d.Spec.Template.Spec, requiredDuringScheduling(&c.spec), k8sutil.LabelHostname(),
 		map[string]string{k8sutil.AppAttr: AppName}, nodeSelector)

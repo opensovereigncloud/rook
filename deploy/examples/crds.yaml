@@ -3286,6 +3286,23 @@ spec:
                         If host networking is enabled or disabled on a running cluster, then the operator will automatically fail over all the mons to
                         apply the new network settings.
                       type: boolean
+                    internalLoadBalancerService:
+                      description: |-
+                        InternalLoadBalancerService exposes each mon through a Service of type LoadBalancer and makes
+                        the mon advertise the load balancer address instead of the node address. This keeps the mon
+                        addresses stable when nodes are replaced. Only effective with the "host" network provider.
+                      properties:
+                        enabled:
+                          description: Enabled creates the mon services with type LoadBalancer
+                          type: boolean
+                        labels:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Labels are applied as annotations to the mon services, for example to request an internal
+                            load balancer from the cloud provider
+                          type: object
+                      type: object
                     ipFamily:
                       description: IPFamily is the single stack IPv6 or IPv4 protocol
                       enum:

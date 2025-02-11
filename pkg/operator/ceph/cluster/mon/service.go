@@ -17,7 +17,9 @@ limitations under the License.
 package mon
 
 import (
+	"context"
 	"fmt"
+	"time"
 
 	"github.com/pkg/errors"
 	"github.com/rook/rook/pkg/operator/k8sutil"
@@ -25,19 +27,29 @@ import (
 	v1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 )
+
+// how long to wait for the cloud provider to assign an address to a mon load balancer service
+var loadBalancerIPTimeout = 2 * time.Minute
 
 func (c *Cluster) createService(mon *monConfig) (*v1.Service, error) {
 	svcDef := &v1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      mon.ResourceName,
-			Namespace: c.Namespace,
-			Labels:    c.getLabels(mon, false, true),
+			Name:        mon.ResourceName,
+			Namespace:   c.Namespace,
+			Labels:      c.getLabels(mon, false, true),
+			Annotations: c.ClusterInfo.NetworkSpec.InternalLoadBalancerService.Labels,
 		},
 		Spec: v1.ServiceSpec{
 			Selector: c.getLabels(mon, false, false),
 		},
 	}
+
+	if c.ClusterInfo.NetworkSpec.InternalLoadBalancerService.Enabled {
+		svcDef.Spec.Type = v1.ServiceTypeLoadBalancer
+	}
+
 	err := c.ownerInfo.SetOwnerReference(svcDef)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to set owner reference to mon service %q", svcDef.Name)
@@ -52,7 +64,7 @@ func (c *Cluster) createService(mon *monConfig) (*v1.Service, error) {
 	// Set the ClusterIP if the service does not exist and we expect a certain cluster IP
 	// For example, in disaster recovery the service might have been deleted accidentally, but we have the
 	// expected endpoint from the mon configmap.
-	if mon.PublicIP != "" {
+	if !c.ClusterInfo.NetworkSpec.InternalLoadBalancerService.Enabled && mon.PublicIP != "" {
 		_, err := c.context.Clientset.CoreV1().Services(c.Namespace).Get(c.ClusterInfo.Context, svcDef.Name, metav1.GetOptions{})
 		if err != nil && kerrors.IsNotFound(err) {
 			log.NamespacedInfo(c.Namespace, logger, "ensuring the clusterIP for mon %q is %q", mon.DaemonName, mon.PublicIP)
@@ -72,6 +84,32 @@ func (c *Cluster) createService(mon *monConfig) (*v1.Service, error) {
 
 	log.NamespacedInfo(c.Namespace, logger, "mon %q cluster IP is %s", mon.DaemonName, s.Spec.ClusterIP)
 	return s, nil
+}
+
+// createLoadBalancerService creates the mon service as a load balancer and returns the address
+// assigned to it, which is the address the mon advertises instead of the node address.
+func (c *Cluster) createLoadBalancerService(mon *monConfig) (string, error) {
+	if _, err := c.createService(mon); err != nil {
+		return "", errors.Wrap(err, "failed to create mon service")
+	}
+
+	var ip string
+	err := wait.PollUntilContextTimeout(c.ClusterInfo.Context, 2*time.Second, loadBalancerIPTimeout, true, func(ctx context.Context) (bool, error) {
+		svc, err := c.context.Clientset.CoreV1().Services(c.Namespace).Get(ctx, mon.ResourceName, metav1.GetOptions{})
+		if err != nil {
+			return false, err
+		}
+		if len(svc.Status.LoadBalancer.Ingress) > 0 {
+			ip = svc.Status.LoadBalancer.Ingress[0].IP
+		}
+		return ip != "", nil
+	})
+	if err != nil {
+		return "", errors.Wrapf(err, "failed to get load balancer IP for mon %q", mon.DaemonName)
+	}
+
+	log.NamespacedInfo(c.Namespace, logger, "mon %q load balancer IP is %s", mon.DaemonName, ip)
+	return ip, nil
 }
 
 func (c *Cluster) exportService(service *v1.Service, monDaemon string) (string, error) {

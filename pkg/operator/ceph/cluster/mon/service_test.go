@@ -19,6 +19,7 @@ package mon
 import (
 	"context"
 	"testing"
+	"time"
 
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
 	"github.com/rook/rook/pkg/clusterd"
@@ -26,7 +27,10 @@ import (
 	"github.com/rook/rook/pkg/operator/k8sutil"
 	"github.com/rook/rook/pkg/operator/test"
 	"github.com/stretchr/testify/assert"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 func TestCreateService(t *testing.T) {
@@ -78,4 +82,44 @@ func TestCreateServiceSelector(t *testing.T) {
 		assert.Equal(t, FloatingMonAppName, service.Spec.Selector["app"])
 		assert.Equal(t, "c", service.Spec.Selector["mon"])
 	})
+}
+
+func TestCreateLoadBalancerService(t *testing.T) {
+	ctx := t.Context()
+	clientset := test.New(t, 1)
+	c := New(ctx, &clusterd.Context{Clientset: clientset}, "ns", cephv1.ClusterSpec{}, &k8sutil.OwnerInfo{})
+	c.ClusterInfo = client.AdminTestClusterInfo("rook-ceph")
+	c.ClusterInfo.NetworkSpec.InternalLoadBalancerService = cephv1.InternalLoadBalancerServiceSpec{
+		Enabled: true,
+		Labels:  map[string]string{"example.com/internal": "true"},
+	}
+	m := &monConfig{ResourceName: "rook-ceph-mon-a", DaemonName: "a", PublicIP: "10.0.0.5"}
+
+	// no address is assigned to the load balancer
+	loadBalancerIPTimeout = time.Millisecond
+	_, err := c.createLoadBalancerService(m)
+	assert.Error(t, err)
+
+	service, err := clientset.CoreV1().Services(c.Namespace).Get(ctx, m.ResourceName, metav1.GetOptions{})
+	assert.NoError(t, err)
+	assert.Equal(t, v1.ServiceTypeLoadBalancer, service.Spec.Type)
+	assert.Equal(t, "true", service.Annotations["example.com/internal"])
+	// the mon address is the load balancer address and must not be requested as clusterIP
+	assert.Equal(t, "", service.Spec.ClusterIP)
+
+	// the cloud provider assigns an address. the fake clientset drops the status when the
+	// service is updated, so the status is set on every get.
+	clientset.PrependReactor("get", "services", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		obj, err := clientset.Tracker().Get(action.GetResource(), action.GetNamespace(), action.(k8stesting.GetAction).GetName())
+		if err != nil {
+			return true, nil, err
+		}
+		svc := obj.(*v1.Service).DeepCopy()
+		svc.Status.LoadBalancer.Ingress = []v1.LoadBalancerIngress{{IP: "10.0.0.5"}}
+		return true, svc, nil
+	})
+	loadBalancerIPTimeout = time.Minute
+	ip, err := c.createLoadBalancerService(m)
+	assert.NoError(t, err)
+	assert.Equal(t, "10.0.0.5", ip)
 }

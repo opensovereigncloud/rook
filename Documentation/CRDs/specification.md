@@ -8981,6 +8981,49 @@ string
 <td></td>
 </tr></tbody>
 </table>
+<h3 id="ceph.rook.io/v1.InternalLoadBalancerServiceSpec">InternalLoadBalancerServiceSpec
+</h3>
+<p>
+(<em>Appears on:</em><a href="#ceph.rook.io/v1.NetworkSpec">NetworkSpec</a>)
+</p>
+<div>
+<p>InternalLoadBalancerServiceSpec configures load balancer services for the mons</p>
+</div>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>enabled</code><br/>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Enabled creates the mon services with type LoadBalancer</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>labels</code><br/>
+<em>
+map[string]string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Labels are applied as annotations to the mon services, for example to request an internal
+load balancer from the cloud provider</p>
+</td>
+</tr>
+</tbody>
+</table>
 <h3 id="ceph.rook.io/v1.KafkaEndpointSpec">KafkaEndpointSpec
 </h3>
 <p>
@@ -11585,6 +11628,22 @@ MultiClusterServiceSpec
 <td>
 <em>(Optional)</em>
 <p>Enable multiClusterService to export the Services between peer clusters</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>internalLoadBalancerService</code><br/>
+<em>
+<a href="#ceph.rook.io/v1.InternalLoadBalancerServiceSpec">
+InternalLoadBalancerServiceSpec
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>InternalLoadBalancerService exposes each mon through a Service of type LoadBalancer and makes
+the mon advertise the load balancer address instead of the node address. This keeps the mon
+addresses stable when nodes are replaced. Only effective with the &ldquo;host&rdquo; network provider.</p>
 </td>
 </tr>
 </tbody>
