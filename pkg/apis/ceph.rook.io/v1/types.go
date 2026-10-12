@@ -3449,8 +3449,11 @@ type NetworkSpec struct {
 	MultiClusterService MultiClusterServiceSpec `json:"multiClusterService,omitempty"`
 
 	// InternalLoadBalancerService exposes each mon through a Service of type LoadBalancer and makes
-	// the mon advertise the load balancer address instead of the node address. This keeps the mon
-	// addresses stable when nodes are replaced. Only effective with the "host" network provider.
+	// the mon advertise the IP address of the load balancer instead of the node address. A mon that
+	// stores its data on a PVC (mon.volumeClaimTemplate) is then no longer bound to a node: it can
+	// move to another node and keeps its name and address. Requires the "host" network provider
+	// and is ignored with any other provider. Set it when the cluster is created; changing it on a
+	// running cluster is not supported.
 	// +optional
 	InternalLoadBalancerService InternalLoadBalancerServiceSpec `json:"internalLoadBalancerService,omitempty"`
 }
@@ -3508,7 +3511,8 @@ type MultiClusterServiceSpec struct {
 
 // InternalLoadBalancerServiceSpec configures load balancer services for the mons
 type InternalLoadBalancerServiceSpec struct {
-	// Enabled creates the mon services with type LoadBalancer
+	// Enabled creates the mon services with type LoadBalancer. The load balancer must be assigned an
+	// IP address; a load balancer that only has a hostname is not supported.
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
 

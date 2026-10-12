@@ -646,7 +646,7 @@ func (c *Cluster) clusterInfoToMonConfigWithExclude(excludedMon string) []*monCo
 		if schedule != nil {
 			zone = schedule.Zone
 			nodeName = schedule.Name
-			if c.ClusterInfo.NetworkSpec.InternalLoadBalancerService.Enabled || schedule.Address == monPublicIP {
+			if c.monsUseLoadBalancer() || schedule.Address == monPublicIP {
 				isHostNetwork = true
 			}
 		}
@@ -898,7 +898,7 @@ func (c *Cluster) initMonIPs(mons []*monConfig) error {
 			return c.ClusterInfo.Context.Err()
 		}
 		if m.UseHostNetwork {
-			if c.ClusterInfo.NetworkSpec.InternalLoadBalancerService.Enabled {
+			if c.monsUseLoadBalancer() {
 				ip, err := c.createLoadBalancerService(m)
 				if err != nil {
 					return err
@@ -1713,7 +1713,7 @@ func (c *Cluster) configureDefaultMonStorage(m *monConfig, d *apps.Deployment, s
 				// update nodeSelector in case if ROOK_CUSTOM_HOSTNAME_LABEL was changed:
 				nodeSelector = map[string]string{k8sutil.LabelHostname(): schedule.Hostname}
 			}
-			if c.ClusterInfo.NetworkSpec.InternalLoadBalancerService.Enabled {
+			if c.monIsPortable(m) {
 				nodeSelector = nil
 			}
 			k8sutil.SetNodeAntiAffinityForPod(&d.Spec.Template.Spec, requiredDuringScheduling(&c.spec), k8sutil.LabelHostname(),
@@ -1751,7 +1751,7 @@ func (c *Cluster) configureDefaultMonStorage(m *monConfig, d *apps.Deployment, s
 		p.PodAntiAffinity = nil
 		nodeSelector = map[string]string{k8sutil.LabelHostname(): schedule.Hostname}
 	}
-	if c.ClusterInfo.NetworkSpec.InternalLoadBalancerService.Enabled {
+	if c.monIsPortable(m) {
 		nodeSelector = nil
 	}
 	k8sutil.SetNodeAntiAffinityForPod(&d.Spec.Template.Spec, requiredDuringScheduling(&c.spec), k8sutil.LabelHostname(),

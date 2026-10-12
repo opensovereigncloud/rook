@@ -30,24 +30,48 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 )
 
-// how long to wait for the cloud provider to assign an address to a mon load balancer service
-var loadBalancerIPTimeout = 2 * time.Minute
+// how long to wait for the cloud provider to assign an address to a mon load balancer service,
+// and how often to check for it
+var (
+	loadBalancerIPTimeout      = 2 * time.Minute
+	loadBalancerIPPollInterval = 2 * time.Second
+)
+
+// monsUseLoadBalancer returns whether each mon advertises the address of its load balancer service
+// instead of the address of the node it runs on.
+func (c *Cluster) monsUseLoadBalancer() bool {
+	return c.spec.Network.IsHost() && c.spec.Network.InternalLoadBalancerService.Enabled
+}
+
+// monIsPortable returns whether a mon can move to another node and keep its identity: its address
+// belongs to a load balancer and its store is on a PVC.
+func (c *Cluster) monIsPortable(mon *monConfig) bool {
+	return c.monsUseLoadBalancer() && c.monVolumeClaimTemplate(mon) != nil
+}
 
 func (c *Cluster) createService(mon *monConfig) (*v1.Service, error) {
 	svcDef := &v1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        mon.ResourceName,
-			Namespace:   c.Namespace,
-			Labels:      c.getLabels(mon, false, true),
-			Annotations: c.ClusterInfo.NetworkSpec.InternalLoadBalancerService.Labels,
+			Name:      mon.ResourceName,
+			Namespace: c.Namespace,
+			Labels:    c.getLabels(mon, false, true),
 		},
 		Spec: v1.ServiceSpec{
 			Selector: c.getLabels(mon, false, false),
 		},
 	}
 
-	if c.ClusterInfo.NetworkSpec.InternalLoadBalancerService.Enabled {
+	if c.monsUseLoadBalancer() {
 		svcDef.Spec.Type = v1.ServiceTypeLoadBalancer
+		svcDef.Annotations = c.spec.Network.InternalLoadBalancerService.Labels
+		// The update below replaces the whole object. Keep the finalizers, or the cloud provider
+		// loses the one that makes it clean up the load balancer when the service is deleted.
+		existing, err := c.context.Clientset.CoreV1().Services(c.Namespace).Get(c.ClusterInfo.Context, svcDef.Name, metav1.GetOptions{})
+		if err == nil {
+			svcDef.Finalizers = existing.Finalizers
+		} else if !kerrors.IsNotFound(err) {
+			return nil, errors.Wrapf(err, "failed to get mon service %q", svcDef.Name)
+		}
 	}
 
 	err := c.ownerInfo.SetOwnerReference(svcDef)
@@ -64,7 +88,7 @@ func (c *Cluster) createService(mon *monConfig) (*v1.Service, error) {
 	// Set the ClusterIP if the service does not exist and we expect a certain cluster IP
 	// For example, in disaster recovery the service might have been deleted accidentally, but we have the
 	// expected endpoint from the mon configmap.
-	if !c.ClusterInfo.NetworkSpec.InternalLoadBalancerService.Enabled && mon.PublicIP != "" {
+	if !c.monsUseLoadBalancer() && mon.PublicIP != "" {
 		_, err := c.context.Clientset.CoreV1().Services(c.Namespace).Get(c.ClusterInfo.Context, svcDef.Name, metav1.GetOptions{})
 		if err != nil && kerrors.IsNotFound(err) {
 			log.NamespacedInfo(c.Namespace, logger, "ensuring the clusterIP for mon %q is %q", mon.DaemonName, mon.PublicIP)
@@ -86,15 +110,16 @@ func (c *Cluster) createService(mon *monConfig) (*v1.Service, error) {
 	return s, nil
 }
 
-// createLoadBalancerService creates the mon service as a load balancer and returns the address
-// assigned to it, which is the address the mon advertises instead of the node address.
+// createLoadBalancerService creates the mon service as a load balancer and returns the IP address
+// assigned to it, which is the address the mon advertises instead of the node address. Load
+// balancers that are only assigned a hostname are not supported.
 func (c *Cluster) createLoadBalancerService(mon *monConfig) (string, error) {
 	if _, err := c.createService(mon); err != nil {
 		return "", errors.Wrap(err, "failed to create mon service")
 	}
 
 	var ip string
-	err := wait.PollUntilContextTimeout(c.ClusterInfo.Context, 2*time.Second, loadBalancerIPTimeout, true, func(ctx context.Context) (bool, error) {
+	err := wait.PollUntilContextTimeout(c.ClusterInfo.Context, loadBalancerIPPollInterval, loadBalancerIPTimeout, true, func(ctx context.Context) (bool, error) {
 		svc, err := c.context.Clientset.CoreV1().Services(c.Namespace).Get(ctx, mon.ResourceName, metav1.GetOptions{})
 		if err != nil {
 			return false, err

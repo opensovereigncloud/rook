@@ -9006,7 +9006,8 @@ bool
 </td>
 <td>
 <em>(Optional)</em>
-<p>Enabled creates the mon services with type LoadBalancer</p>
+<p>Enabled creates the mon services with type LoadBalancer. The load balancer must be assigned an
+IP address; a load balancer that only has a hostname is not supported.</p>
 </td>
 </tr>
 <tr>
@@ -11642,8 +11643,11 @@ InternalLoadBalancerServiceSpec
 <td>
 <em>(Optional)</em>
 <p>InternalLoadBalancerService exposes each mon through a Service of type LoadBalancer and makes
-the mon advertise the load balancer address instead of the node address. This keeps the mon
-addresses stable when nodes are replaced. Only effective with the &ldquo;host&rdquo; network provider.</p>
+the mon advertise the IP address of the load balancer instead of the node address. A mon that
+stores its data on a PVC (mon.volumeClaimTemplate) is then no longer bound to a node: it can
+move to another node and keeps its name and address. Requires the &ldquo;host&rdquo; network provider
+and is ignored with any other provider. Set it when the cluster is created; changing it on a
+running cluster is not supported.</p>
 </td>
 </tr>
 </tbody>

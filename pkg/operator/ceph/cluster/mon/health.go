@@ -407,6 +407,14 @@ func (c *Cluster) checkHealth(ctx context.Context) error {
 }
 
 func (c *Cluster) shouldFailoverMonImmediately(ctx context.Context, monName string) bool {
+	// A portable mon is not bound to the node it was assigned to when it was created. After it has
+	// moved once, that node may be gone for good, which says nothing about the mon: let it come
+	// back with its identity and address, and only fail over after the regular timeout.
+	if c.monIsPortable(&monConfig{DaemonName: monName, Zone: c.monZone(monName)}) {
+		log.NamespacedDebug(c.Namespace, logger, "mon %q is not bound to a node", monName)
+		return false
+	}
+
 	// If the assigned node does not exist, reschedule immediately
 	log.NamespacedDebug(c.Namespace, logger, "checking if mon %q is scheduled on a node", monName)
 	assignedNode := ""
@@ -795,7 +803,7 @@ func (c *Cluster) failoverMon(name string) error {
 	}
 
 	if c.spec.Network.IsHost() {
-		if c.ClusterInfo.NetworkSpec.InternalLoadBalancerService.Enabled {
+		if c.monsUseLoadBalancer() {
 			ip, err := c.createLoadBalancerService(m)
 			if err != nil {
 				return err
@@ -856,8 +864,22 @@ func (c *Cluster) failoverMon(name string) error {
 	return c.removeMon(name)
 }
 
+// monZone returns the zone a mon was assigned to, or an empty string
+func (c *Cluster) monZone(name string) string {
+	if schedule := c.mapping.Schedule[name]; schedule != nil {
+		return schedule.Zone
+	}
+	return ""
+}
+
 func (c *Cluster) stopMonDuringFailover(name string) bool {
 	if !c.spec.Network.IsHost() {
+		return true
+	}
+
+	// A portable mon does not occupy a node address, so its replacement may run on the same node.
+	// Without stopping it, the replacement would need a node that no mon runs on.
+	if c.monIsPortable(&monConfig{DaemonName: name, Zone: c.monZone(name)}) {
 		return true
 	}
 

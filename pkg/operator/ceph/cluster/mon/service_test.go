@@ -85,41 +85,69 @@ func TestCreateServiceSelector(t *testing.T) {
 }
 
 func TestCreateLoadBalancerService(t *testing.T) {
+	timeout, interval := loadBalancerIPTimeout, loadBalancerIPPollInterval
+	t.Cleanup(func() { loadBalancerIPTimeout, loadBalancerIPPollInterval = timeout, interval })
+	loadBalancerIPPollInterval = time.Millisecond
+
 	ctx := t.Context()
 	clientset := test.New(t, 1)
-	c := New(ctx, &clusterd.Context{Clientset: clientset}, "ns", cephv1.ClusterSpec{}, &k8sutil.OwnerInfo{})
-	c.ClusterInfo = client.AdminTestClusterInfo("rook-ceph")
-	c.ClusterInfo.NetworkSpec.InternalLoadBalancerService = cephv1.InternalLoadBalancerServiceSpec{
+	spec := cephv1.ClusterSpec{}
+	spec.Network.InternalLoadBalancerService = cephv1.InternalLoadBalancerServiceSpec{
 		Enabled: true,
 		Labels:  map[string]string{"example.com/internal": "true"},
 	}
+	c := New(ctx, &clusterd.Context{Clientset: clientset}, "ns", spec, &k8sutil.OwnerInfo{})
+	c.ClusterInfo = client.AdminTestClusterInfo("rook-ceph")
 	m := &monConfig{ResourceName: "rook-ceph-mon-a", DaemonName: "a", PublicIP: "10.0.0.5"}
 
-	// no address is assigned to the load balancer
-	loadBalancerIPTimeout = time.Millisecond
-	_, err := c.createLoadBalancerService(m)
+	// the setting is ignored without host networking
+	service, err := c.createService(m)
+	assert.NoError(t, err)
+	assert.Equal(t, v1.ServiceType(""), service.Spec.Type)
+	assert.Empty(t, service.Annotations)
+	assert.Equal(t, m.PublicIP, service.Spec.ClusterIP)
+	err = clientset.CoreV1().Services(c.Namespace).Delete(ctx, m.ResourceName, metav1.DeleteOptions{})
+	assert.NoError(t, err)
+
+	// with host networking, no address is assigned to the load balancer yet
+	c.spec.Network.Provider = cephv1.NetworkProviderHost
+	loadBalancerIPTimeout = 20 * time.Millisecond
+	_, err = c.createLoadBalancerService(m)
 	assert.Error(t, err)
 
-	service, err := clientset.CoreV1().Services(c.Namespace).Get(ctx, m.ResourceName, metav1.GetOptions{})
+	service, err = clientset.CoreV1().Services(c.Namespace).Get(ctx, m.ResourceName, metav1.GetOptions{})
 	assert.NoError(t, err)
 	assert.Equal(t, v1.ServiceTypeLoadBalancer, service.Spec.Type)
 	assert.Equal(t, "true", service.Annotations["example.com/internal"])
 	// the mon address is the load balancer address and must not be requested as clusterIP
 	assert.Equal(t, "", service.Spec.ClusterIP)
 
-	// the cloud provider assigns an address. the fake clientset drops the status when the
-	// service is updated, so the status is set on every get.
+	// the cloud provider adds its finalizer, which an update of the service must keep
+	service.Finalizers = []string{"service.kubernetes.io/load-balancer-cleanup"}
+	_, err = clientset.CoreV1().Services(c.Namespace).Update(ctx, service, metav1.UpdateOptions{})
+	assert.NoError(t, err)
+
+	// the cloud provider assigns the address only after a few polls. the fake clientset drops the
+	// status when the service is updated, so the status is set on get.
+	gets := 0
 	clientset.PrependReactor("get", "services", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		obj, err := clientset.Tracker().Get(action.GetResource(), action.GetNamespace(), action.(k8stesting.GetAction).GetName())
 		if err != nil {
 			return true, nil, err
 		}
 		svc := obj.(*v1.Service).DeepCopy()
-		svc.Status.LoadBalancer.Ingress = []v1.LoadBalancerIngress{{IP: "10.0.0.5"}}
+		if gets++; gets > 5 {
+			svc.Status.LoadBalancer.Ingress = []v1.LoadBalancerIngress{{IP: "10.0.0.5"}}
+		}
 		return true, svc, nil
 	})
 	loadBalancerIPTimeout = time.Minute
 	ip, err := c.createLoadBalancerService(m)
 	assert.NoError(t, err)
 	assert.Equal(t, "10.0.0.5", ip)
+	assert.Greater(t, gets, 5)
+
+	stored, err := clientset.Tracker().Get(v1.SchemeGroupVersion.WithResource("services"), c.Namespace, m.ResourceName)
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"service.kubernetes.io/load-balancer-cleanup"}, stored.(*v1.Service).Finalizers)
 }

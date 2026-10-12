@@ -394,7 +394,7 @@ func (c *Cluster) makeMonDaemonContainer(monConfig *monConfig) corev1.Container 
 	container = config.ConfigureLivenessProbe(container, c.spec.HealthCheck.LivenessProbe[cephv1.KeyMon])
 
 	// If host networking is enabled, we don't need a bind addr that is different from the public addr
-	if c.ClusterInfo.NetworkSpec.InternalLoadBalancerService.Enabled || !monConfig.UseHostNetwork {
+	if c.monsUseLoadBalancer() || !monConfig.UseHostNetwork {
 		// Opposite of the above, --public-bind-addr will *not* still advertise on the previous
 		// port, which makes sense because this is the pod IP, which changes with every new pod.
 		container.Args = append(container.Args, config.NewFlag("public-bind-addr", bindaddr))

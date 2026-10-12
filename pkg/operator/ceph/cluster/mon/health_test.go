@@ -248,6 +248,20 @@ func TestScheduleFailoverImmediately(t *testing.T) {
 	assert.NoError(t, err)
 	// node a has been deleted, so mon a should failover immediately
 	assert.True(t, c.shouldFailoverMonImmediately((t.Context()), "a"))
+
+	// with a load balancer address the mon keeps its node pinning as long as it has no PVC
+	c.spec.Network.Provider = cephv1.NetworkProviderHost
+	c.spec.Network.InternalLoadBalancerService.Enabled = true
+	assert.True(t, c.shouldFailoverMonImmediately(t.Context(), "a"))
+	assert.False(t, c.stopMonDuringFailover("a"))
+	// with a PVC the mon can move to another node, so a missing node is no reason to replace it
+	c.spec.Mon.VolumeClaimTemplate = &cephv1.VolumeClaimTemplate{}
+	assert.False(t, c.shouldFailoverMonImmediately(t.Context(), "a"))
+	assert.True(t, c.stopMonDuringFailover("a"))
+	// plain host networking is not affected by the PVC
+	c.spec.Network.InternalLoadBalancerService.Enabled = false
+	assert.True(t, c.shouldFailoverMonImmediately(t.Context(), "a"))
+	assert.False(t, c.stopMonDuringFailover("a"))
 }
 
 func TestTrackMonsOutOfQuorum(t *testing.T) {
