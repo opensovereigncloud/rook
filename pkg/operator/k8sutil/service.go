@@ -69,6 +69,11 @@ func UpdateService(
 	serviceDefinition.Spec.ClusterIP = existing.Spec.ClusterIP
 	// ResourceVersion required to update services in k8s v1 API to prevent race conditions
 	serviceDefinition.ResourceVersion = existing.ResourceVersion
+	// The update replaces the whole object. Keep the finalizers that others have added, such as
+	// the one that makes a cloud provider clean up the load balancer of the service.
+	if len(serviceDefinition.Finalizers) == 0 {
+		serviceDefinition.Finalizers = existing.Finalizers
+	}
 	return clientset.CoreV1().Services(namespace).Update(ctx, serviceDefinition, metav1.UpdateOptions{})
 }
 

@@ -109,8 +109,18 @@ func TestCreateLoadBalancerService(t *testing.T) {
 	err = clientset.CoreV1().Services(c.Namespace).Delete(ctx, m.ResourceName, metav1.DeleteOptions{})
 	assert.NoError(t, err)
 
-	// with host networking, no address is assigned to the load balancer yet
+	// with host networking the setting decides
 	c.spec.Network.Provider = cephv1.NetworkProviderHost
+	c.spec.Network.InternalLoadBalancerService.Enabled = false
+	service, err = c.createService(m)
+	assert.NoError(t, err)
+	assert.Equal(t, v1.ServiceType(""), service.Spec.Type)
+	assert.Empty(t, service.Annotations)
+	err = clientset.CoreV1().Services(c.Namespace).Delete(ctx, m.ResourceName, metav1.DeleteOptions{})
+	assert.NoError(t, err)
+
+	// no address is assigned to the load balancer yet
+	c.spec.Network.InternalLoadBalancerService.Enabled = true
 	loadBalancerIPTimeout = 20 * time.Millisecond
 	_, err = c.createLoadBalancerService(m)
 	assert.Error(t, err)
@@ -130,6 +140,7 @@ func TestCreateLoadBalancerService(t *testing.T) {
 	// the cloud provider assigns the address only after a few polls. the fake clientset drops the
 	// status when the service is updated, so the status is set on get.
 	gets := 0
+	var deletionTimestamp *metav1.Time
 	clientset.PrependReactor("get", "services", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		obj, err := clientset.Tracker().Get(action.GetResource(), action.GetNamespace(), action.(k8stesting.GetAction).GetName())
 		if err != nil {
@@ -139,6 +150,7 @@ func TestCreateLoadBalancerService(t *testing.T) {
 		if gets++; gets > 5 {
 			svc.Status.LoadBalancer.Ingress = []v1.LoadBalancerIngress{{IP: "10.0.0.5"}}
 		}
+		svc.DeletionTimestamp = deletionTimestamp
 		return true, svc, nil
 	})
 	loadBalancerIPTimeout = time.Minute
@@ -150,4 +162,35 @@ func TestCreateLoadBalancerService(t *testing.T) {
 	stored, err := clientset.Tracker().Get(v1.SchemeGroupVersion.WithResource("services"), c.Namespace, m.ResourceName)
 	assert.NoError(t, err)
 	assert.Equal(t, []string{"service.kubernetes.io/load-balancer-cleanup"}, stored.(*v1.Service).Finalizers)
+
+	// the address of a service that is being deleted is not used
+	now := metav1.Now()
+	deletionTimestamp = &now
+	loadBalancerIPTimeout = 20 * time.Millisecond
+	_, err = c.createLoadBalancerService(m)
+	assert.Error(t, err)
+}
+
+func TestMonIsPortable(t *testing.T) {
+	c := &Cluster{monsToFailover: map[string]*monConfig{}}
+	m := &monConfig{DaemonName: "a"}
+	pvc := &cephv1.VolumeClaimTemplate{}
+
+	// a load balancer address and a PVC are both needed, and the load balancer needs host networking
+	c.spec.Network.InternalLoadBalancerService.Enabled = true
+	c.spec.Mon.VolumeClaimTemplate = pvc
+	assert.False(t, c.monIsPortable(m))
+	c.spec.Network.Provider = cephv1.NetworkProviderHost
+	assert.True(t, c.monIsPortable(m))
+	c.spec.Mon.VolumeClaimTemplate = nil
+	assert.False(t, c.monIsPortable(m))
+	c.spec.Mon.VolumeClaimTemplate = pvc
+	c.spec.Network.InternalLoadBalancerService.Enabled = false
+	assert.False(t, c.monIsPortable(m))
+
+	// a mon that still runs with the previous storage settings is replaced the conservative way
+	c.spec.Network.InternalLoadBalancerService.Enabled = true
+	c.monsToFailover["a"] = m
+	assert.False(t, c.monIsPortable(m))
+	assert.True(t, c.monIsPortable(&monConfig{DaemonName: "b"}))
 }

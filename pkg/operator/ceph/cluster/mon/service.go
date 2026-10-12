@@ -44,8 +44,12 @@ func (c *Cluster) monsUseLoadBalancer() bool {
 }
 
 // monIsPortable returns whether a mon can move to another node and keep its identity: its address
-// belongs to a load balancer and its store is on a PVC.
+// belongs to a load balancer and its store is on a PVC. A mon that is about to be replaced because
+// its storage or network settings changed still runs with the old settings and is not portable.
 func (c *Cluster) monIsPortable(mon *monConfig) bool {
+	if _, migrating := c.monsToFailover[mon.DaemonName]; migrating {
+		return false
+	}
 	return c.monsUseLoadBalancer() && c.monVolumeClaimTemplate(mon) != nil
 }
 
@@ -64,14 +68,6 @@ func (c *Cluster) createService(mon *monConfig) (*v1.Service, error) {
 	if c.monsUseLoadBalancer() {
 		svcDef.Spec.Type = v1.ServiceTypeLoadBalancer
 		svcDef.Annotations = c.spec.Network.InternalLoadBalancerService.Labels
-		// The update below replaces the whole object. Keep the finalizers, or the cloud provider
-		// loses the one that makes it clean up the load balancer when the service is deleted.
-		existing, err := c.context.Clientset.CoreV1().Services(c.Namespace).Get(c.ClusterInfo.Context, svcDef.Name, metav1.GetOptions{})
-		if err == nil {
-			svcDef.Finalizers = existing.Finalizers
-		} else if !kerrors.IsNotFound(err) {
-			return nil, errors.Wrapf(err, "failed to get mon service %q", svcDef.Name)
-		}
 	}
 
 	err := c.ownerInfo.SetOwnerReference(svcDef)
@@ -124,7 +120,8 @@ func (c *Cluster) createLoadBalancerService(mon *monConfig) (string, error) {
 		if err != nil {
 			return false, err
 		}
-		if len(svc.Status.LoadBalancer.Ingress) > 0 {
+		// a service that is being deleted may still show the address it is about to lose
+		if svc.DeletionTimestamp == nil && len(svc.Status.LoadBalancer.Ingress) > 0 {
 			ip = svc.Status.LoadBalancer.Ingress[0].IP
 		}
 		return ip != "", nil
